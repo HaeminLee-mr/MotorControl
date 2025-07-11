@@ -1,0 +1,146 @@
+# The controller includes PI speed controller and PI current controller for the DC motor.
+# Simulate transient reponse of the motor.
+# GUI for changing parameters and see thier effect on the transient reponse.
+# GUI controlable parameters = current control bandwidth, speed control bandwidth.
+
+# Haemin Lee, 2025-07-11
+
+import numpy as np
+import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import ttk
+import math
+
+def simulate_motor(Wcc, Wcs, Wm_ref_rpm):
+    dt = 0.000005 
+    t_end = 0.1
+    time = np.arange(0, t_end, dt)
+
+    # Motor Parameters
+    Va_rated = 12           # Rated voltage [V]
+    Ia_rated = 2            # Rated current [A]
+    Te_rated = 0.06         # Rated torque [Nm]
+    Ra = 3.1                # Phase resistance [Ohm]
+    La = 0.1e-3             # Phase inductance [H]
+    J = 16e-9               # Moment of Inertia [kg*m^2]
+    B = 0.0                 # Friction coefficient [kg*m^2/s]
+    Kt = 0.0549             # Torque constant [Nm/A]
+    Ke = Kt                 # Back-EMF constant [V/rad/s]
+    
+    Va_lim = Va_rated * 1.4
+    Te_lim = Te_rated * 1.4
+    Ia_lim = Ia_rated
+
+    Kpc = 1.0 * La * Wcc
+    Kic = 1.0 * Ra * Wcc    # pole-zero cancellation
+    Kps = 1.0 * J * Wcs / Kt 
+    Kis = 1.0 * J * Wcs * Wcs / 5 / Kt 
+
+    Kas = 1 / Kps           # Anti-Windup
+    Kac = 1 / Kpc
+
+    Wm_ref_set = Wm_ref_rpm * 2 * math.pi / 60
+
+    Wm, Ia, Va, Te = 0.0, 0.0, 0.0, 0.0
+    Va_filt, Te_filt, Va_fb = 0.0, 0.0, 0.0
+    Ia_integral, Wm_integral = 0.0, 0.0
+
+    Wm_rpm_list, Va_list, Te_list, Ia_list = [], [], [], []
+    Wm_ref_list = []
+
+    for t in time:
+        Wm_ref = 0 if t < 0.01 else Wm_ref_set
+
+        # Speed Control
+        Wm_error = Wm_ref - Wm
+        Te_fb = Kps * Wm_error + Kis * Wm_integral
+        Te_filt = np.clip(Te_fb, -Te_lim, Te_lim)
+        Ia_ref = Te_filt / Kt
+        Ia_ref = np.clip(Ia_ref, -Ia_lim, Ia_lim)
+        Wm_integral += (Wm_error - Kas * (Te_fb - Te_filt)) * dt
+
+        # Current Control
+        Ia_error = Ia_ref - Ia
+        Va_fb = Kpc * Ia_error + Kic * Ia_integral
+        Va_ff = Ke * Wm
+        Va = Va_fb + Va_ff
+        Va_filt = np.clip(Va, -Va_lim, Va_lim)
+        Ia_integral += (Ia_error - Kac * (Va - Va_filt)) * dt
+
+        # Motor Model
+        Ea = Ke * Wm
+        Ia += (Va_filt - Ea - Ra * Ia) / La * dt
+        Te = Kt * Ia
+        Wm += (Te - B * Wm) / J * dt
+        Wm_rpm = Wm * 60 / (2 * np.pi)
+
+        Wm_rpm_list.append(Wm_rpm)
+        Va_list.append(Va * 100)
+        Te_list.append(Te * 1e6)
+        Wm_ref_list.append(Wm_ref * 60/2/math.pi)
+
+    return time, Wm_rpm_list, Va_list, Te_list, Wm_ref_list
+    
+# ----- GUI Setup -----
+root = tk.Tk()
+root.title("PMDC Motor Controller Simulator")
+
+# Input parameters
+params = {
+    "Wcc" : tk.DoubleVar(value=200),
+    "Wcs" : tk.DoubleVar(value=10),
+    "Wm_ref_rpm" : tk.DoubleVar(value=1500)
+}
+
+frame = ttk.Frame(root)
+frame.pack(padx=10, pady=10)
+
+ttk.Label(frame, text="Wcc (default = 200)").grid(row=0, column=0, sticky="e")
+ttk.Entry(frame, textvariable=params["Wcc"]).grid(row=0, column=1)
+
+ttk.Label(frame, text="Wcs (default =  10)").grid(row=1, column=0, sticky="e")
+ttk.Entry(frame, textvariable=params["Wcs"]).grid(row=1, column=1)
+
+ttk.Label(frame, text="Wm_ref_rpm").grid(row=2, column=0, sticky="e")
+ttk.Entry(frame, textvariable=params["Wm_ref_rpm"]).grid(row=2, column=1)
+
+# Matplotlib figure setup
+fig, ax = plt.subplots()
+fig.canvas.manager.set_window_title("Motor Response")
+
+line1, = ax.plot([], [],'--', color= 'black', label='speed command')
+line2, = ax.plot([], [], label="Wm_rpm")
+line3, = ax.plot([], [], label="Voltage*1e2 (V)")
+line4, = ax.plot([], [], label="Te*1e6 (Nm)")
+
+# line4, = ax.plot([], [], label="Ia (mA)")
+ax.set_xlim(0, 0.1)
+ax.set_ylim(0, 3000)
+ax.set_title("PMDC Motor Control Simulation")
+ax.set_xlabel("Time (s)")
+ax.set_ylabel("RPM, Voltage, Torque")
+ax.legend()
+ax.grid(True)
+plt.ion()
+plt.show()
+
+def run_simulation():
+    args = {key: var.get() for key, var in params.items()}
+    
+    # t, wm, va, te, ia = simulate_motor(**args)
+    t, wm, va, te, Wm_ref_list = simulate_motor(**args)
+    line1.set_data(t, Wm_ref_list)
+    line2.set_data(t, wm)
+    line3.set_data(t, va)
+    line4.set_data(t, te)
+    
+    # line4.set_data(t, ia)
+    ax.relim()
+    ax.autoscale_view()
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+ttk.Button(root, text="Run Simulation", command=run_simulation).pack(pady=10)
+root.bind("<Return>", lambda event: run_simulation())
+
+root.mainloop()
